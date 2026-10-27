@@ -34,7 +34,6 @@ SKIP_SUFFIXES = {".pyc", ".pyo", ".log", ".tmp", ".bak", ".orig", ".zip"}
 SKIP_FILES = {"pack.py", "make_icon.py", "test_e2e.py", "test_llm.py",
               ".DS_Store", "Thumbs.db", "desktop.ini"}
 # 只跳过点文件。注意别把 "_" 加进来 —— app/__init__.py 会连包声明一起被打掉，
-# 解压后虽然靠命名空间包还能跑，但那是运气，不是设计。
 SKIP_PREFIXES = (".",)
 
 INSTALL_TXT = """QuizBank {version} - 安装与使用说明
