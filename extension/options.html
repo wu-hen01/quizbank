@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>QuizBank 设置</title>
+<style>
+  body {
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #f5f6fb; color: #1e2330; margin: 0; padding: 32px 20px;
+  }
+  .wrap { max-width: 520px; margin: 0 auto; background: #fff; border: 1px solid #e5e8f0;
+          border-radius: 14px; padding: 24px 26px; }
+  h1 { font-size: 17px; margin: 0 0 4px; }
+  p.sub { margin: 0 0 20px; font-size: 13px; color: #7d8496; }
+  label { display: block; font-size: 12px; color: #7d8496; margin: 14px 0 5px; }
+  input { width: 100%; box-sizing: border-box; border: 1px solid #e5e8f0; border-radius: 9px;
+          padding: 9px 11px; font-size: 13px; font-family: inherit; outline: none; }
+  input:focus { border-color: #5757d4; box-shadow: 0 0 0 3px rgba(87,87,212,.12); }
+  .row { display: flex; gap: 10px; margin-top: 20px; align-items: center; }
+  button { border: 1px solid #e5e8f0; background: #fff; border-radius: 9px; padding: 8px 15px;
+           font-size: 13px; cursor: pointer; font-family: inherit; }
+  button.primary { background: #5757d4; border-color: #5757d4; color: #fff; }
+  button.primary:hover { background: #4a4ac4; }
+  #status { font-size: 12.5px; color: #7d8496; margin-left: auto; }
+  .ok { color: #17936a !important; }
+  .err { color: #d0453f !important; }
+  .tip { margin-top: 22px; font-size: 12px; color: #7d8496; line-height: 1.7;
+         border-top: 1px dashed #e5e8f0; padding-top: 14px; }
+  code { background: #eef0f7; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>QuizBank 设置</h1>
+  <p class="sub">先在本机运行题库服务，再把地址填到这里。</p>
+
+  <label>服务地址</label>
+  <input id="baseUrl" type="text" placeholder="http://127.0.0.1:8765">
+
+  <label>访问 token（服务端没设置就留空）</label>
+  <input id="token" type="text" placeholder="留空即可">
+
+  <label>单次最多抓取字数</label>
+  <input id="maxChars" type="number" min="500" max="30000" step="500">
+
+  <div class="row">
+    <button class="primary" id="save">保存</button>
+    <button id="test">测试连接</button>
+    <span id="status"></span>
+  </div>
+
+  <div class="tip">
+    用法：在网页上<b>选中题目</b>（题干 + 选项 + 答案），右键 →「收录到 QuizBank」。<br>
+    没有选中时会抓整页文字，噪声比较多，尽量先选中。<br>
+    服务启动命令：<code>python run.py</code>
+  </div>
+</div>
+<script src="options.js"></script>
+</body>
+</html>

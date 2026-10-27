@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "QuizBank 错题收录",
+  "version": "1.0.0",
+  "description": "选中网页上的题目，右键一键收录到本地题库，自动结构化、按学科归类知识点。",
+  "permissions": ["contextMenus", "scripting", "activeTab", "storage", "notifications"],
+  "host_permissions": [
+    "http://127.0.0.1:8765/*",
+    "http://localhost:8765/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "options_page": "options.html",
+  "action": {
+    "default_title": "QuizBank 设置"
+  },
+  "icons": {
+    "128": "icon128.png"
+  }
+}

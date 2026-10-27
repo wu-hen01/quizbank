@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QuizBank · 错题题库</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">Q</span>
+    <div>
+      <h1>QuizBank</h1>
+      <p>本地错题题库 · 按学科沉淀知识要点</p>
+    </div>
+  </div>
+  <div class="top-actions">
+    <span id="llm-pill" class="pill pill-muted">连接中…</span>
+    <button id="btn-refresh" class="btn btn-ghost" title="重新拉取数据">刷新</button>
+  </div>
+</header>
+
+<nav class="tabs">
+  <button class="tab active" data-tab="bank">题库</button>
+  <button class="tab" data-tab="kp">知识点</button>
+  <button class="tab" data-tab="review">复习</button>
+  <button class="tab" data-tab="quiz">测验</button>
+  <button class="tab" data-tab="stats">统计 / 导出</button>
+</nav>
+
+<main>
+  <section id="view-bank" class="view active">
+    <div class="filters">
+      <input id="f-q" type="search" placeholder="搜索题干或解析…" autocomplete="off">
+      <select id="f-subject"><option value="">全部学科</option></select>
+      <select id="f-status">
+        <option value="">全部状态</option>
+        <option value="ok">AI 已解析</option>
+        <option value="pending">解析中</option>
+        <option value="failed">解析失败</option>
+        <option value="none">未启用 AI</option>
+      </select>
+      <button id="f-kp" class="chip chip-active hidden"></button>
+    </div>
+    <div id="bank-list" class="list"></div>
+  </section>
+
+  <section id="view-kp" class="view">
+    <div class="filters">
+      <select id="kp-subject"><option value="">全部学科</option></select>
+      <span class="muted hint">点知识点可以筛出对应题目</span>
+    </div>
+    <div id="kp-list" class="kp-grid"></div>
+  </section>
+
+  <section id="view-review" class="view">
+    <div id="review-host"></div>
+  </section>
+
+  <section id="view-quiz" class="view">
+    <div id="quiz-setup">
+      <div class="quiz-setup-card">
+        <h2>组一张模拟卷</h2>
+        <p class="muted">从题库里随机抽题，交卷后自动判客观题，简答题自己评。</p>
+        <div class="quiz-form">
+          <label>范围
+            <select id="q-subject"><option value="">全部学科</option></select>
+          </label>
+          <label>题量
+            <select id="q-size">
+              <option value="5">5 题（快速）</option>
+              <option value="10" selected>10 题</option>
+              <option value="20">20 题</option>
+              <option value="30">30 题</option>
+            </select>
+          </label>
+          <label>题型
+            <select id="q-kind">
+              <option value="all">全部题型</option>
+              <option value="objective">只考客观题（自动判分）</option>
+            </select>
+          </label>
+          <label>优先
+            <select id="q-prefer">
+              <option value="random">随机</option>
+              <option value="wrong">优先最近做错的</option>
+              <option value="unseen">优先没做过的</option>
+            </select>
+          </label>
+        </div>
+        <div class="quiz-setup-foot">
+          <span id="quiz-pool" class="muted">　</span>
+          <button id="quiz-start" class="btn btn-primary">开始测验</button>
+        </div>
+      </div>
+    </div>
+    <div id="quiz-host" class="hidden"></div>
+  </section>
+
+  <section id="view-stats" class="view">
+    <div id="stats-host"></div>
+  </section>
+</main>
+
+<div id="modal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2 id="modal-title">编辑题目</h2>
+      <button id="modal-close" class="btn btn-ghost">✕</button>
+    </div>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

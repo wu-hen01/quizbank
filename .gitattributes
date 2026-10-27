@@ -1,0 +1,7 @@
+# 统一换行符：start.bat / *.ps1 必须是 CRLF，否则 cmd.exe 和
+# Windows PowerShell 5.1 都会解析出问题（中文会变乱码、语句被吞）。
+* text=auto
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.png binary
+*.ico binary
