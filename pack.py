@@ -31,8 +31,11 @@ INCLUDE_FILES = [
 
 SKIP_DIRS = {"__pycache__", "data", "dist", ".git", ".idea", ".vscode", "node_modules"}
 SKIP_SUFFIXES = {".pyc", ".pyo", ".log", ".tmp", ".bak", ".orig", ".zip"}
-SKIP_FILES = {"pack.py", "make_icon.py", "test_e2e.py", "test_llm.py"}
-SKIP_PREFIXES = ("_", ".")
+SKIP_FILES = {"pack.py", "make_icon.py", "test_e2e.py", "test_llm.py",
+              ".DS_Store", "Thumbs.db", "desktop.ini"}
+# 只跳过点文件。注意别把 "_" 加进来 —— app/__init__.py 会连包声明一起被打掉，
+# 解压后虽然靠命名空间包还能跑，但那是运气，不是设计。
+SKIP_PREFIXES = (".",)
 
 INSTALL_TXT = """QuizBank {version} - 安装与使用说明
 ==================================================
@@ -182,17 +185,32 @@ def main() -> int:
     # ---- 自检：绝不能带出去的东西 ----
     with zipfile.ZipFile(target) as zf:
         names = zf.namelist()
+    rel_names = [n.split("/", 1)[1] for n in names if "/" in n]
     forbidden = [
         n for n in names
         if n.endswith("/.env")
         or "/data/" in n
         or "/__pycache__/" in n
         or n.endswith((".pyc", ".log"))
-        or pathlib.PurePosixPath(n).name.startswith("_")
+        or (pathlib.PurePosixPath(n).name.startswith("_")
+            and pathlib.PurePosixPath(n).name != "__init__.py")
     ]
     if forbidden:
         print("!! 包里混进了不该有的文件：")
         for n in forbidden:
+            print("   ", n)
+        return 1
+
+    # ---- 自检：该有的东西不能少 ----
+    required = [
+        "INSTALL.txt", "start.bat", "run.py", "requirements.txt",
+        "app/__init__.py", "app/main.py", "static/index.html",
+        "extension/manifest.json",
+    ]
+    missing = [r for r in required if r not in rel_names]
+    if missing:
+        print("!! 包里缺少必要文件：")
+        for n in missing:
             print("   ", n)
         return 1
 
