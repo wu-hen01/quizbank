@@ -162,8 +162,31 @@ def collect() -> list:
     return entries
 
 
+def lint_start_bat() -> None:
+    """start.bat 最容易踩的两个坑，打包前先拦一道。
+
+    1. 非 ASCII：cmd.exe 用 GBK 解码无 BOM 的 .bat，中文会把解析搞乱。
+    2. echo 行里的括号：在 if 块内会被当成命令分组分隔符，块提前闭合，
+       整个脚本解析失败 -> 双击后窗口一闪就关（"此时不应有 ."）。
+    """
+    path = ROOT / "start.bat"
+    raw = path.read_bytes()
+    text = raw.decode("ascii", errors="replace")
+    bad = [c for c in text if ord(c) > 127 or c == "\ufffd"]
+    if bad:
+        raise SystemExit("start.bat 里有非 ASCII 字符，cmd 会解析出错")
+    for lineno, line in enumerate(text.splitlines(), 1):
+        if line.strip().lower().startswith("echo") and ("(" in line or ")" in line):
+            raise SystemExit(
+                "start.bat 第 %d 行 echo 里有括号，会导致脚本解析失败：%s"
+                % (lineno, line.strip()))
+    if b"\n" in raw.replace(b"\r\n", b""):
+        raise SystemExit("start.bat 里有裸 LF，cmd 需要 CRLF 行尾")
+
+
 def main() -> int:
     version = detect_version()
+    lint_start_bat()
     entries = collect()
 
     if "--list" in sys.argv:
