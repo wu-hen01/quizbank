@@ -122,6 +122,21 @@ function previewOf(stem) {
   return line.length > 90 ? line.slice(0, 90) + '…' : line;
 }
 
+/* 题干里的图（可能不止一张）：老数据只有 image_url，新数据是 image_urls */
+function shotBlock(q) {
+  const urls = (q && q.image_urls && q.image_urls.length)
+    ? q.image_urls
+    : (q && q.image_url ? [q.image_url] : []);
+  if (!urls.length) return null;
+  const box = h('div', { class: 'shots' });
+  for (const url of urls) {
+    box.appendChild(h('a', {
+      class: 'shot', href: url, target: '_blank', rel: 'noreferrer', title: '点击看原图',
+    }, h('img', { src: url, alt: '题目配图', loading: 'lazy' })));
+  }
+  return box;
+}
+
 function questionCard(q) {
   const card = h('article', { class: 'card qcard', title: '点一下展开/收起' });
 
@@ -140,11 +155,8 @@ function questionCard(q) {
   const body = h('div', { class: 'card-body' });
   body.appendChild(h('div', { class: 'stem', text: q.stem }));
 
-  if (q.image_url) {
-    body.appendChild(h('a', {
-      class: 'shot', href: q.image_url, target: '_blank', rel: 'noreferrer', title: '点击看原图',
-    }, h('img', { src: q.image_url, alt: '题目截图', loading: 'lazy' })));
-  }
+  const shots = shotBlock(q);
+  if (shots) body.appendChild(shots);
 
   if (q.options && q.options.length) {
     const box = h('div', { class: 'options' });
@@ -408,11 +420,8 @@ function renderReview() {
 
   card.appendChild(h('div', { class: 'stem', text: q.stem }));
 
-  if (q.image_url) {
-    card.appendChild(h('a', {
-      class: 'shot', href: q.image_url, target: '_blank', rel: 'noreferrer', title: '点击看原图',
-    }, h('img', { src: q.image_url, alt: '题目截图', loading: 'lazy' })));
-  }
+  const shots = shotBlock(q);
+  if (shots) card.appendChild(shots);
 
   if (q.options && q.options.length) {
     const box = h('div', { class: 'options' });
@@ -683,11 +692,8 @@ function renderQuiz() {
     ));
     card.appendChild(h('div', { class: 'stem', text: q.stem }));
 
-    if (q.image_url) {
-      card.appendChild(h('a', {
-        class: 'shot', href: q.image_url, target: '_blank', rel: 'noreferrer', title: '点击看原图',
-      }, h('img', { src: q.image_url, alt: '题目截图', loading: 'lazy' })));
-    }
+    const shots = shotBlock(q);
+    if (shots) card.appendChild(shots);
 
     if (q.options && q.options.length) {
       const box = h('div', { class: 'quiz-opts' });
@@ -869,11 +875,8 @@ function renderQuizResult() {
     ));
     card.appendChild(h('div', { class: 'stem', text: it.stem }));
 
-    if (it.image_url) {
-      card.appendChild(h('a', {
-        class: 'shot', href: it.image_url, target: '_blank', rel: 'noreferrer', title: '点击看原图',
-      }, h('img', { src: it.image_url, alt: '题目截图', loading: 'lazy' })));
-    }
+    const shots = shotBlock(it);
+    if (shots) card.appendChild(shots);
 
     if (it.options && it.options.length) {
       const box = h('div', { class: 'options' });

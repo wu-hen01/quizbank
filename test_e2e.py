@@ -183,6 +183,61 @@ if health.get("ocr_available"):
     )
     check("空白图不崩", r.status_code in (200, 400), f"{r.status_code} {r.text[:200]}")
 
+print("[14] 题干配图：文字 + 多张图一起收录")
+import base64 as _b64
+
+_png = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\xf8\xff"
+    b"\xff?\x00\x05\xfe\x02\xfe\xa7\x35\x81\x84\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
+def _img(suffix=b""):
+    return "data:image/png;base64," + _b64.b64encode(_png + suffix).decode()
+
+
+text_img = (
+    "如图所示，一棵二叉搜索树的中序遍历结果是递增序列，下列说法正确的是？\n"
+    "A. 左子树上所有结点值均小于根\n"
+    "B. 右子树上所有结点值均大于根\n"
+    "C. 中序遍历可以得到有序序列\n"
+    "D. 以上都正确\n"
+    "正确答案：D"
+)
+r = client.post(
+    "/api/capture",
+    json={"text": text_img, "images": [_img(), _img(b"1")], "url": "http://x.test/img"},
+)
+data = r.json()
+check("带图收录 200", r.status_code == 200, f"{r.status_code} {r.text[:200]}")
+check("服务端存了 2 张图", data.get("images") == 2, str(data.get("images")))
+urls = (data.get("question") or {}).get("image_urls") or []
+check("题面带 2 个 image_urls", len(urls) == 2, str(urls))
+check("image_url 回落成第一张", (data.get("question") or {}).get("image_url") == (urls[0] if urls else None), str(urls))
+check("图片能访问", all(client.get(u).status_code == 200 for u in urls), str(urls))
+check("选项与答案没被图破坏", (data.get("question") or {}).get("correct_answer") == "D", str((data.get("question") or {}).get("correct_answer")))
+
+r = client.post(
+    "/api/capture",
+    json={"text": text_img, "images": [_img(b"2")], "url": "http://x.test/img"},
+)
+data = r.json()
+urls2 = (data.get("question") or {}).get("image_urls") or []
+check("重复收录时追加图片", len(urls2) == 3, str(urls2))
+check("重复收录不新建题", data.get("created") is False, str(data.get("created")))
+
+r = client.post(
+    "/api/capture",
+    json={"text": "坏图不影响文字：另一道题的题干内容在这里\nA. 对\nB. 错\n正确答案：A", "images": ["data:image/png;base64,@@not-base64@@"]},
+)
+check("坏图不阻塞收录", r.status_code == 200, f"{r.status_code} {r.text[:200]}")
+check("坏图被跳过", (r.json().get("images") or 0) == 0, str(r.json().get("images")))
+check("坏图有原因", bool(r.json().get("image_errors")), str(r.json().get("image_errors")))
+
+r = client.post("/api/capture", json={"images": [_img()]})
+check("只有图没有文字时给 400 且说明 OCR", r.status_code == 400 and "OCR" in r.text, f"{r.status_code} {r.text[:160]}")
+
 print("[15] 一页多题拆分")
 body = "题干内容" * 12
 page = (

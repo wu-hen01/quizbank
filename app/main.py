@@ -36,7 +36,7 @@ async def _lifespan(_app: "FastAPI"):
 
 
 app = FastAPI(
-    title="QuizBank", version="1.0.0", docs_url="/api/docs", lifespan=_lifespan
+    title="QuizBank", version="1.0.1", docs_url="/api/docs", lifespan=_lifespan
 )
 
 app.add_middleware(
@@ -67,6 +67,10 @@ class CaptureIn(BaseModel):
     site: str = ""
     whole_page: bool = False   # 扩展没拿到选区、退化成整页时为 True
     selection_len: int = 0     # 扩展拿到的选区长（调试用）
+    images: List[str] = []     # 题干里的图：dataURL / 裸 base64 / http(s) 地址
+    ocr: bool = False          # 对 images 做 OCR（没给 text 时自动开）
+    lang: str = ""             # 覆盖 OCR 语言，如 en-US
+    keep_image: bool = True    # 把图存到 data/images 并在界面显示
 
 
 class CaptureImageIn(BaseModel):
@@ -104,6 +108,17 @@ class MergeIn(BaseModel):
 
 # ---------------------------------------------------------------- 序列化
 
+def _json_list(raw: str) -> List[str]:
+    """把 image_paths 这类 JSON 数组列读回来；坏数据一律当空。"""
+    try:
+        data = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [str(x) for x in data if str(x or "").strip()]
+
+
 def _q_to_dict(conn, row) -> Dict[str, Any]:
     subject_row = None
     if row["subject_id"]:
@@ -127,6 +142,10 @@ def _q_to_dict(conn, row) -> Dict[str, Any]:
     except (TypeError, ValueError):
         options = []
 
+    image_paths = _json_list(row["image_paths"] if "image_paths" in row.keys() else "")
+    if not image_paths and row["image_path"]:
+        image_paths = [row["image_path"]]
+
     return {
         "id": row["id"],
         "stem": row["stem"],
@@ -143,7 +162,9 @@ def _q_to_dict(conn, row) -> Dict[str, Any]:
         "source_title": row["source_title"],
         "source_site": row["source_site"],
         "image_path": row["image_path"] or "",
-        "image_url": ("/images/" + row["image_path"]) if row["image_path"] else "",
+        "image_url": ("/images/" + image_paths[0]) if image_paths else "",
+        "image_paths": image_paths,
+        "image_urls": ["/images/" + p for p in image_paths],
         "llm_status": row["llm_status"],
         "seen_count": row["seen_count"],
         "created_at": row["created_at"],
@@ -274,13 +295,19 @@ def _record_attempt(conn, qid: int, mine: str, correct: str) -> None:
 # ---------------------------------------------------------------- 收录
 
 def _store_capture(
-    text: str, url: str, title: str, site: str, image_path: str = ""
+    text: str,
+    url: str,
+    title: str,
+    site: str,
+    image_paths: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """收录一段题目文本。调用方负责截断长度。"""
     parsed = parse.parse_question(text)
     stem = parsed["stem"] or text[:200]
     stem_hash = parse.stem_hash(stem)
     site = site or parse.guess_site(url)
+    paths = [p for p in (image_paths or []) if p]
+    primary = paths[0] if paths else ""
     now = utcnow()
     created = False
 
@@ -315,18 +342,24 @@ def _store_capture(
                     "UPDATE questions SET analysis = ? WHERE id = ?",
                     (parsed["analysis"], qid),
                 )
-            if image_path and not (row["image_path"] or ""):
-                conn.execute(
-                    "UPDATE questions SET image_path = ? WHERE id = ?",
-                    (image_path, qid),
-                )
+            if paths:
+                # 重复收录时把新图追加进去（同一张图只留一份）
+                have = _json_list(row["image_paths"] if "image_paths" in row.keys() else "")
+                if not have and row["image_path"]:
+                    have = [row["image_path"]]
+                merged = have + [p for p in paths if p not in have]
+                if merged != have:
+                    conn.execute(
+                        "UPDATE questions SET image_paths = ?, image_path = ? WHERE id = ?",
+                        (json.dumps(merged, ensure_ascii=False), merged[0], qid),
+                    )
         else:
             cur = conn.execute(
                 """INSERT INTO questions
                    (stem, stem_hash, qtype, options, my_answer, correct_answer, analysis,
                     subject_id, chapter, difficulty, source_url, source_title, source_site,
-                    raw_text, image_path, llm_status, seen_count, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    raw_text, image_path, image_paths, llm_status, seen_count, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     stem,
                     stem_hash,
@@ -342,7 +375,8 @@ def _store_capture(
                     title,
                     site,
                     text,
-                    image_path,
+                    primary,
+                    json.dumps(paths, ensure_ascii=False),
                     "pending" if config.LLM_ENABLED else "none",
                     1,
                     now,
@@ -369,26 +403,112 @@ def _store_capture(
     return {"created": created, "id": qid, "question": question}
 
 
+MAX_CAPTURE_IMAGES = 6
+MAX_CAPTURE_IMAGE_CHARS = 40 * 1024 * 1024  # dataURL 总长上限，防止一口气吃满内存
+
+
+def _image_payload(item: str) -> Tuple[bytes, str]:
+    """单个图片项（dataURL / 裸 base64 / http(s) 地址）→ (bytes, ext)。"""
+    item = (item or "").strip()
+    if not item:
+        raise ValueError("空的图片项")
+    if re.match(r"^https?://", item, re.I):
+        return _download_image(item)
+    return ocr.decode_image(item)
+
+
+def _prepare_images(
+    items: List[str], keep: bool = True, force_ocr: bool = False, lang: str = ""
+) -> Dict[str, Any]:
+    """存图（可选）+ OCR。单张图失败只记一条 error，不影响整条收录。"""
+    paths: List[str] = []
+    texts: List[str] = []
+    errors: List[str] = []
+    total = 0
+    for item in (items or [])[:MAX_CAPTURE_IMAGES]:
+        total += len(item or "")
+        if total > MAX_CAPTURE_IMAGE_CHARS:
+            errors.append("图片总量过大，后面的已忽略")
+            break
+        try:
+            data, ext = _image_payload(item)
+        except HTTPException as exc:
+            errors.append(str(getattr(exc, "detail", exc)))
+            continue
+        except (ValueError, OSError) as exc:
+            errors.append(str(exc))
+            continue
+        if keep:
+            try:
+                path, _full = ocr.save_image(data, ext)
+                if path and path not in paths:
+                    paths.append(path)
+            except Exception:  # 存图失败不影响收录
+                pass
+        if force_ocr:
+            ok, reason = ocr.available()
+            if ok:
+                ocr_text, ocr_err = ocr.recognize_bytes(data, ext, lang)
+                if ocr_text.strip():
+                    texts.append(ocr_text.strip())
+                if ocr_err:
+                    errors.append(ocr_err)
+            elif reason:
+                errors.append(reason)
+    return {"paths": paths, "texts": texts, "errors": errors}
+
+
 @app.post("/api/capture")
 def capture(body: CaptureIn, _=Depends(auth)):
+    """收录一段题目文本，可同时带上题干里的图片（一张或几张）。"""
     text = (body.text or "").strip()
+    images = [i for i in (body.images or []) if (i or "").strip()]
+    # 只给了图没给文字时自动 OCR；给了文字就不必再拖慢收录
+    want_ocr = bool(body.ocr) or not text
+    prep = _prepare_images(
+        images, keep=body.keep_image, force_ocr=want_ocr and bool(images), lang=body.lang
+    )
+    if not text and prep["texts"]:
+        text = "\n".join(prep["texts"])
+    text = text.strip()[:20000]
+
     if not text:
+        if images:
+            detail = "OCR 没识别出文字"
+            if prep["errors"]:
+                detail += "（%s）" % "；".join(prep["errors"][:2])
+            raise HTTPException(
+                status_code=400, detail=detail + "；也可以选中文字一起收录"
+            )
         raise HTTPException(status_code=400, detail="没有收到文本，请先选中题目再右键")
-    text = text[:20000]
+
+    extra = {"images": len(prep["paths"]), "ocr_text": "\n".join(prep["texts"])}
+    if prep["errors"]:
+        extra["image_errors"] = prep["errors"][:5]
 
     chunks = parse.split_questions(text)
     if len(chunks) <= 1:
-        return _store_capture(text, body.url, body.title, body.site)
+        result = _store_capture(
+            text, body.url, body.title, body.site, prep["paths"]
+        )
+        result.update(extra)
+        return result
 
-    results = [_store_capture(chunk, body.url, body.title, body.site) for chunk in chunks]
+    # 一页多题：图都算给第一道（用户选中的通常就是第一道）
+    results = [_store_capture(chunks[0], body.url, body.title, body.site, prep["paths"])]
+    results += [
+        _store_capture(chunk, body.url, body.title, body.site) for chunk in chunks[1:]
+    ]
     first = results[0]
-    return {
+    result = {
         "created": any(r["created"] for r in results),
         "count": len(results),
         "id": first["id"],
         "question": first["question"],
         "items": results,
     }
+    result.update(extra)
+    return result
 
 
 # ---------------------------------------------------------------- 图片收录
@@ -428,43 +548,25 @@ def _download_image(url: str) -> Tuple[bytes, str]:
 
 @app.post("/api/capture/image")
 def capture_image(body: CaptureImageIn, _=Depends(auth)):
-    """截图/图片收录：OCR 出文字后走和文本收录一样的流程。"""
-    if body.image:
-        try:
-            data, ext = ocr.decode_image(body.image)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-    elif body.image_url:
-        data, ext = _download_image(body.image_url)
-    else:
+    """截图收录：单张图 OCR 出文字后走和文本收录一样的流程（保留老接口）。"""
+    images = [x for x in (body.image, body.image_url) if (x or "").strip()]
+    if not images:
         raise HTTPException(
             status_code=400, detail="请提供 image（dataURL/base64）或 image_url"
         )
-
-    ok, reason = ocr.available()
-    ocr_text, ocr_error = "", ""
-    if ok:
-        ocr_text, ocr_error = ocr.recognize_bytes(data, ext, body.lang)
-    else:
-        ocr_error = reason
-
-    text = (body.text or "").strip() or ocr_text
-    if not text:
-        raise HTTPException(
-            status_code=400,
-            detail="OCR 没识别出文字（%s），可以选中文本再收录" % (ocr_error or "图片里没有文字"),
+    result = capture(
+        CaptureIn(
+            text=body.text,
+            url=body.url,
+            title=body.title,
+            site=body.site,
+            images=images,
+            ocr=True,
+            lang=body.lang,
+            keep_image=body.keep_image,
         )
-
-    image_path = ""
-    if body.keep_image:
-        try:
-            image_path, _full = ocr.save_image(data, ext)
-        except Exception:  # 存图失败不影响收录
-            image_path = ""
-
-    result = _store_capture(text[:20000], body.url, body.title, body.site, image_path)
-    result["ocr_text"] = ocr_text
-    result["ocr_error"] = ocr_error
+    )
+    result.setdefault("ocr_error", "；".join(result.get("image_errors") or []))
     return result
 
 
@@ -723,6 +825,7 @@ def _quiz_item(conn, row) -> Dict[str, Any]:
         "qtype": q["qtype"],
         "options": q["options"],
         "image_url": q["image_url"],
+        "image_urls": q["image_urls"],
         "subject": q["subject"],
         "chapter": q["chapter"],
         "knowledge_points": [k["name"] for k in q["knowledge_points"]],
@@ -828,6 +931,7 @@ def quiz_submit(body: QuizSubmitIn, _=Depends(auth)):
                     "qtype": qtype,
                     "options": q["options"],
                     "image_url": q["image_url"],
+                    "image_urls": q["image_urls"],
                     "my_answer": mine,
                     "correct_answer": correct,
                     "analysis": q["analysis"],

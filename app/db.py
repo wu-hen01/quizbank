@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS questions (
     source_site     TEXT NOT NULL DEFAULT '',
     raw_text        TEXT NOT NULL DEFAULT '',
     image_path      TEXT NOT NULL DEFAULT '',
+    image_paths     TEXT NOT NULL DEFAULT '[]',
     llm_status      TEXT NOT NULL DEFAULT 'none',
     seen_count      INTEGER NOT NULL DEFAULT 1,
     created_at      TEXT NOT NULL,
@@ -103,6 +104,7 @@ def db():
 # 老库升级：新加的列在这里补，init_db() 每次启动都会检查
 _MIGRATIONS = [
     ("questions", "image_path", "TEXT NOT NULL DEFAULT ''"),
+    ("questions", "image_paths", "TEXT NOT NULL DEFAULT '[]'"),
 ]
 
 

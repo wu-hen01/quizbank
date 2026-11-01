@@ -31,7 +31,7 @@ INCLUDE_FILES = [
 
 SKIP_DIRS = {"__pycache__", "data", "dist", ".git", ".idea", ".vscode", "node_modules"}
 SKIP_SUFFIXES = {".pyc", ".pyo", ".log", ".tmp", ".bak", ".orig", ".zip"}
-SKIP_FILES = {"pack.py", "make_icon.py", "test_e2e.py", "test_llm.py",
+SKIP_FILES = {"pack.py", "make_icon.py", "test_e2e.py", "test_llm.py", "test_collect.js",
               ".DS_Store", "Thumbs.db", "desktop.ini"}
 # 只跳过点文件。注意别把 "_" 加进来 —— app/__init__.py 会连包声明一起被打掉，
 SKIP_PREFIXES = (".",)
@@ -127,7 +127,7 @@ def detect_version() -> str:
             return version
     except (OSError, ValueError):
         pass
-    return "1.0.0"
+    return "1.0.1"
 
 
 def collect() -> list:

@@ -511,4 +511,12 @@ kbd {
   width: 100%;
   height: auto;
 }
+/* 题目配图（可能不止一张） */
+.shots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 10px 0 4px;
+}
+.shots .shot { margin: 0; }
 .shot:hover { border-color: var(--accent); }
