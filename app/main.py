@@ -1,11 +1,14 @@
 """FastAPI 应用：本地 API + 静态前端。"""
+import hmac
+import ipaddress
 import json
 import os
 import re
+import socket
 import threading
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -36,12 +39,35 @@ async def _lifespan(_app: "FastAPI"):
 
 
 app = FastAPI(
-    title="QuizBank", version="1.0.1", docs_url="/api/docs", lifespan=_lifespan
+    title="QuizBank", version="1.0.2", docs_url="/api/docs", lifespan=_lifespan
 )
+
+
+def _cors_origins() -> List[str]:
+    """允许跨域访问本机 API 的来源。
+
+    默认只放行「本机页面 + 浏览器扩展」，避免任意网页读写你的本地题库
+    （旧版本用的是 ["*"]，配合默认不校验 token 相当于把 API 交出去）。
+    需要放开时在 .env 里设 QUIZBANK_CORS=* 或逗号分隔的来源列表。
+    """
+    raw = (os.environ.get("QUIZBANK_CORS") or "").strip()
+    if raw == "*":
+        return ["*"]
+    if raw:
+        return [item.strip().rstrip("/") for item in raw.split(",") if item.strip()]
+    origins = [
+        "http://127.0.0.1:%d" % config.PORT,
+        "http://localhost:%d" % config.PORT,
+    ]
+    if config.HOST not in ("127.0.0.1", "localhost", "::1", "0.0.0.0", ""):
+        origins.append("http://%s:%d" % (config.HOST, config.PORT))
+    return origins
+
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins(),
+    allow_origin_regex=r"^(chrome|moz)-extension://[A-Za-z0-9_\-]+$",
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -54,7 +80,7 @@ def auth(request: Request, token: str = "") -> None:
     if not config.TOKEN:
         return
     supplied = request.headers.get("x-token") or token
-    if supplied != config.TOKEN:
+    if not hmac.compare_digest(supplied, config.TOKEN):
         raise HTTPException(status_code=401, detail="token 无效")
 
 
@@ -405,6 +431,23 @@ def _store_capture(
 
 MAX_CAPTURE_IMAGES = 6
 MAX_CAPTURE_IMAGE_CHARS = 40 * 1024 * 1024  # dataURL 总长上限，防止一口气吃满内存
+MAX_IMAGE_DIR_BYTES = 500 * 1024 * 1024     # 截图目录总量上限，防止被刷满磁盘
+
+
+def _image_dir_bytes() -> int:
+    """统计 data/images 当前占用（文件数很少，直接 stat 就够）。"""
+    total = 0
+    try:
+        with os.scandir(config.IMAGE_DIR) as entries:
+            for entry in entries:
+                try:
+                    if entry.is_file():
+                        total += entry.stat().st_size
+                except OSError:
+                    continue
+    except OSError:
+        return 0
+    return total
 
 
 def _image_payload(item: str) -> Tuple[bytes, str]:
@@ -439,6 +482,12 @@ def _prepare_images(
             errors.append(str(exc))
             continue
         if keep:
+            if _image_dir_bytes() > MAX_IMAGE_DIR_BYTES:
+                errors.append(
+                    "截图目录已超过 %d MB，这张没有保存（可清一下 data/images）"
+                    % (MAX_IMAGE_DIR_BYTES // 1024 // 1024)
+                )
+                continue
             try:
                 path, _full = ocr.save_image(data, ext)
                 if path and path not in paths:
@@ -513,14 +562,106 @@ def capture(body: CaptureIn, _=Depends(auth)):
 
 # ---------------------------------------------------------------- 图片收录
 
+_MAX_REDIRECTS = 3
+
+_IMAGE_CTYPE_EXT = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/bmp": ".bmp",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/tiff": ".tif",
+}
+
+_IMAGE_MAGIC = (
+    (b"\x89PNG\r\n\x1a\n", ".png"),
+    (b"\xff\xd8\xff", ".jpg"),
+    (b"GIF87a", ".gif"),
+    (b"GIF89a", ".gif"),
+    (b"BM", ".bmp"),
+    (b"II*\x00", ".tif"),
+    (b"MM\x00*", ".tif"),
+)
+
+
+def _is_public_url(url: str) -> bool:
+    """只放行公网 http(s) 地址，挡住本机/局域网/云元数据（防 SSRF）。
+
+    注意：这里校验的是域名解析结果，httpx 建立连接时会再解析一次，
+    理论上存在 DNS rebinding 的时间差；对「只绑 127.0.0.1 的个人工具」够用了。
+    """
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    if parsed.scheme.lower() not in ("http", "https"):
+        return False
+    host = (parsed.hostname or "").strip().strip("[]").rstrip(".").lower()
+    if not host:
+        return False
+    if host in ("localhost", "localhost.localdomain") or host.endswith(
+        (".localhost", ".local", ".internal", ".home.arpa")
+    ):
+        return False
+    try:
+        infos = socket.getaddrinfo(host, parsed.port or 0, proto=socket.IPPROTO_TCP)
+    except (socket.gaierror, UnicodeError, OSError):
+        return False
+    if not infos:
+        return False
+    for info in infos:
+        addr = str(info[4][0]).split("%")[0]
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            return False
+        if not ip.is_global:  # 私有/环回/链路本地/保留/CGNAT 都是 False
+            return False
+    return True
+
+
+def _sniff_image_ext(data: bytes) -> str:
+    """按文件头判断图片类型，认不出返回空串（挡掉伪装成图片的 HTML/文本）。"""
+    head = (data or b"")[:16]
+    for magic, ext in _IMAGE_MAGIC:
+        if head.startswith(magic):
+            return ext
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return ".webp"
+    return ""
+
+
 def _download_image(url: str) -> Tuple[bytes, str]:
-    """服务端下载远程图片（扩展的 canvas 方案失败时的兜底）。"""
+    """服务端下载远程图片（扩展的 canvas 方案失败时的兜底）。
+
+    只允许公网地址、逐跳校验重定向、按文件头确认真的是图片，
+    避免这个接口变成「读内网 + 回显」或「往图片目录塞非图片文件」的通道。
+    """
     url = (url or "").strip()
     if not re.match(r"^https?://", url, re.I):
         raise HTTPException(status_code=400, detail="image_url 必须是 http(s) 地址")
+    if not _is_public_url(url):
+        raise HTTPException(
+            status_code=400,
+            detail="只能下载公网图片（本机/局域网地址不允许，请让页面内转成图片数据）",
+        )
+    target = url
     try:
-        with httpx.Client(timeout=20.0, follow_redirects=True) as client:
-            resp = client.get(url)
+        with httpx.Client(timeout=20.0, follow_redirects=False) as client:
+            resp = client.get(target)
+            hops = 0
+            while resp.status_code in (301, 302, 303, 307, 308):
+                location = resp.headers.get("location") or ""
+                if not location:
+                    raise HTTPException(status_code=400, detail="图片地址重定向缺少目标")
+                if hops >= _MAX_REDIRECTS:
+                    raise HTTPException(status_code=400, detail="图片地址重定向过多")
+                target = urljoin(target, location)
+                if not _is_public_url(target):
+                    raise HTTPException(status_code=400, detail="只能下载公网图片")
+                hops += 1
+                resp = client.get(target)
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=400, detail="下载图片失败: %s" % exc)
     if resp.status_code != 200:
@@ -531,18 +672,12 @@ def _download_image(url: str) -> Tuple[bytes, str]:
         raise HTTPException(status_code=400, detail="图片超过 12 MB")
     if not resp.content:
         raise HTTPException(status_code=400, detail="图片内容为空")
-    ctype = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
-    ext = {
-        "image/png": ".png",
-        "image/jpeg": ".jpg",
-        "image/jpg": ".jpg",
-        "image/bmp": ".bmp",
-        "image/gif": ".gif",
-        "image/webp": ".webp",
-        "image/tiff": ".tif",
-    }.get(ctype, "")
+    ext = _sniff_image_ext(resp.content)
     if not ext:
-        ext = os.path.splitext(urlparse(url).path)[1].lower() or ".png"
+        ctype = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+        ext = _IMAGE_CTYPE_EXT.get(ctype, "")
+    if not ext:
+        raise HTTPException(status_code=400, detail="下载到的内容不是图片")
     return resp.content, ext
 
 
@@ -1064,7 +1199,7 @@ def health():
         "ocr_available": ocr_ok,
         "ocr_engine": ocr_reason,
         "ocr_lang": config.OCR_LANG,
-        "db": str(config.DB_PATH),
+        "db": config.DB_PATH.name,   # 只给文件名，别把本机绝对路径暴露给网页
     }
 
 

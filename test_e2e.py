@@ -10,6 +10,9 @@ import tempfile
 os.environ["QUIZBANK_DATA_DIR"] = os.path.join(
     tempfile.mkdtemp(prefix="quizbank_test_"), "data"
 )
+# 测试不打真实的 LLM 接口：显式置空，_load_dotenv 不会再用 .env 里的真 key 覆盖
+os.environ["LLM_API_KEY"] = ""
+os.environ.pop("QUIZBANK_CORS", None)
 
 from fastapi.testclient import TestClient
 
@@ -331,7 +334,106 @@ check("size 越界 422", r.status_code == 422, str(r.status_code))
 r = client.get("/api/review/queue?limit=50")
 check("复习队列有到期题", r.json()["due"] >= 1, str(r.json().get("due")))
 
-print("[17] 删除")
+print("[17] 安全加固")
+import app.config as cfg_mod
+import app.main as main_mod
+
+r = client.get("/api/health", headers={"Origin": "http://evil.example"})
+check(
+    "陌生来源没有 CORS 放行",
+    "access-control-allow-origin" not in {k.lower() for k in r.headers},
+    str(r.headers.get("access-control-allow-origin")),
+)
+r = client.get("/api/health", headers={"Origin": "http://127.0.0.1:8765"})
+check(
+    "本机页面有 CORS 放行",
+    r.headers.get("access-control-allow-origin") == "http://127.0.0.1:8765",
+    str(r.headers.get("access-control-allow-origin")),
+)
+r = client.get(
+    "/api/health",
+    headers={"Origin": "chrome-extension://abcdefghijklmnopabcdefghijklmnop"},
+)
+check(
+    "浏览器扩展来源有 CORS 放行",
+    bool(r.headers.get("access-control-allow-origin")),
+    str(r.headers.get("access-control-allow-origin")),
+)
+r = client.options(
+    "/api/capture",
+    headers={
+        "Origin": "http://evil.example",
+        "Access-Control-Request-Method": "POST",
+    },
+)
+check(
+    "陌生来源预检不通",
+    "access-control-allow-origin" not in {k.lower() for k in r.headers},
+    str(r.status_code),
+)
+
+check("127.0.0.1 不算公网", not main_mod._is_public_url("http://127.0.0.1:8765/x.png"))
+check("localhost 不算公网", not main_mod._is_public_url("http://localhost/x.png"))
+check(
+    "云元数据地址不算公网",
+    not main_mod._is_public_url("http://169.254.169.254/latest/meta-data/"),
+)
+check("内网段不算公网", not main_mod._is_public_url("http://192.168.1.10/x.png"))
+check("file 协议被拒", not main_mod._is_public_url("file:///C:/x.png"))
+check("公网地址放行", main_mod._is_public_url("http://8.8.8.8/x.png"))
+
+check(
+    "PNG 文件头能认出来",
+    main_mod._sniff_image_ext(b"\x89PNG\r\n\x1a\n" + b"0" * 16) == ".png",
+)
+check(
+    "HTML 伪装成图片会被识破",
+    main_mod._sniff_image_ext(b"<html><body>not an image</body></html>") == "",
+)
+
+r = client.post(
+    "/api/capture",
+    json={
+        "text": "1. 安全测试：本机图片地址\nA. 甲\nB. 乙\n正确答案：A",
+        "images": ["http://127.0.0.1:8765/api/health"],
+    },
+)
+body = r.json()
+check("本机图片地址存不下来", r.status_code == 200 and body.get("images") == 0, r.text[:200])
+check(
+    "拒绝原因是公网限制",
+    any("公网" in e for e in (body.get("image_errors") or [])),
+    str(body.get("image_errors")),
+)
+r = client.post(
+    "/api/capture",
+    json={
+        "text": "2. 安全测试：云元数据地址\nA. 甲\nB. 乙\n正确答案：B",
+        "images": ["http://169.254.169.254/latest/meta-data/"],
+    },
+)
+check("云元数据地址存不下来", r.json().get("images") == 0, r.text[:120])
+
+h = client.get("/api/health").json()
+check(
+    "health 不暴露本机绝对路径",
+    "\\" not in h.get("db", "") and "/" not in h.get("db", ""),
+    str(h.get("db")),
+)
+
+old_token = cfg_mod.TOKEN
+try:
+    cfg_mod.TOKEN = "s3cret-token"
+    r = client.get("/api/questions")
+    check("开了 token 后没凭据 401", r.status_code == 401, str(r.status_code))
+    r = client.get("/api/questions", headers={"X-Token": "wrong"})
+    check("错误 token 401", r.status_code == 401, str(r.status_code))
+    r = client.get("/api/questions", headers={"X-Token": "s3cret-token"})
+    check("正确 token 放行", r.status_code == 200, str(r.status_code))
+finally:
+    cfg_mod.TOKEN = old_token
+
+print("[18] 删除")
 before = client.get("/api/questions").json()["total"]
 r = client.delete(f"/api/questions/{q2['id']}")
 check("delete 200", r.status_code == 200, r.text[:200])

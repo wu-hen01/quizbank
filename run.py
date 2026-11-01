@@ -29,5 +29,14 @@ if __name__ == "__main__":
             "  AI     not configured (rule-based parsing only; set LLM_API_KEY in .env)",
         )
     _say("  停止   Ctrl + C", "  stop   Ctrl + C")
+    if config.HOST not in ("127.0.0.1", "localhost", "::1") and not config.TOKEN:
+        _say(
+            "  ⚠ 警告：服务不是只监听本机，而且没有设置 QUIZBANK_TOKEN。",
+            "  WARNING: not bound to loopback and QUIZBANK_TOKEN is empty.",
+        )
+        _say(
+            "    局域网上任何人都能读写你的题库，请先设置一个随机 token。",
+            "    Anyone on your LAN can read/write your question bank.",
+        )
     _say("=" * 56)
     uvicorn.run("app.main:app", host=config.HOST, port=config.PORT, log_level="info")

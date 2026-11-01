@@ -26,6 +26,7 @@ INCLUDE_FILES = [
     "requirements.txt",
     ".env.example",
     "README.md",
+    "LICENSE",
     "resplit.py",
 ]
 
@@ -127,7 +128,7 @@ def detect_version() -> str:
             return version
     except (OSError, ValueError):
         pass
-    return "1.0.1"
+    return "1.0.2"
 
 
 def collect() -> list:
